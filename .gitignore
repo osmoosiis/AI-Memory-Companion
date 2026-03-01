@@ -1,0 +1,21 @@
+# virtual environment
+dementia_env/
+venv/
+env/
+
+# python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# environment variables
+.env
+
+# vscode (optional)
+.vscode/
+
+# system files
+.DS_Store
+
+*.db
