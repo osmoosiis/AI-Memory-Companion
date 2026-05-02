@@ -1,10 +1,10 @@
-import sqlite3
 import json
 import numpy as np
 import cv2
 from deepface import DeepFace
-
-DB_PATH = "face.db"
+from database import DB_PATH
+from camera_utils import capture_frame_interactive
+import sqlite3
 
 
 def get_conn():
@@ -68,8 +68,7 @@ def print_persons(rows):
     print()
     print(f"  {'ID':<5} {'Name':<20} {'Relationship':<20} {'Reminder'}")
     print("  " + "-" * 70)
-    for row in rows:
-        pid, name, relationship, reminder = row
+    for pid, name, relationship, reminder in rows:
         print(f"  {pid:<5} {name:<20} {relationship:<20} {reminder}")
     print()
 
@@ -92,32 +91,22 @@ def add_photos_to_person(person_id, name):
         choice = input("  Choose: ").strip()
 
         if choice == "1":
-            cap = cv2.VideoCapture(0)
-            print("  Press 'c' to capture, 'q' to cancel.")
-            while True:
-                ret, frame = cap.read()
-                cv2.imshow("Capture - press C", frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('c'):
-                    try:
-                        result = DeepFace.represent(frame, model_name="Facenet", enforce_detection=False)
-                        emb = result[0]["embedding"]
-                        new_embeddings.append(emb)
-                        print(f"  Captured! New photos: {len(new_embeddings)}")
-                    except Exception as e:
-                        print(f"   Failed: {e}")
-                    break
-                elif key == ord('q'):
-                    break
-            cap.release()
-            cv2.destroyAllWindows()
+            frame = capture_frame_interactive()
+            if frame is not None:
+                try:
+                    result = DeepFace.represent(frame, model_name="Facenet", enforce_detection=False)
+                    emb = result[0]["embedding"]
+                    new_embeddings.append(emb)
+                    print(f"  Captured! New photos: {len(new_embeddings)}")
+                except Exception as e:
+                    print(f"  Failed: {e}")
 
         elif choice == "2":
             path = input("  Enter image file path: ").strip()
             try:
                 img = cv2.imread(path)
                 if img is None:
-                    print("   Could not load image.")
+                    print("  Could not load image.")
                     continue
                 result = DeepFace.represent(img, model_name="Facenet", enforce_detection=False)
                 emb = result[0]["embedding"]
@@ -128,13 +117,12 @@ def add_photos_to_person(person_id, name):
 
         elif choice == "3":
             if len(new_embeddings) == 0:
-                print("   No new photos added.")
+                print("  No new photos added.")
                 continue
-            # Average existing embedding with all new ones
             all_embeddings = [existing_emb] + new_embeddings
-            avg_embedding = np.mean(all_embeddings, axis=0).tolist()
+            avg_embedding  = np.mean(all_embeddings, axis=0).tolist()
             update_embedding(person_id, avg_embedding)
-            print(f"\n '{name}' updated with {len(new_embeddings)} new photo(s)!")
+            print(f"\n  '{name}' updated with {len(new_embeddings)} new photo(s)!")
             break
 
         elif choice == "4":
@@ -160,8 +148,7 @@ def main():
         choice = input("Choose an option: ").strip()
 
         if choice == "1":
-            rows = list_persons()
-            print_persons(rows)
+            print_persons(list_persons())
 
         elif choice == "2":
             rows = list_persons()
@@ -169,30 +156,28 @@ def main():
             if not rows:
                 continue
             try:
-                pid = int(input("Enter ID to delete: ").strip())
-                ids = [r[0] for r in rows]
+                pid  = int(input("Enter ID to delete: ").strip())
+                ids  = [r[0] for r in rows]
                 if pid not in ids:
-                    print(f"   No person with ID {pid}.\n")
+                    print(f"  No person with ID {pid}.\n")
                     continue
                 name = next(r[1] for r in rows if r[0] == pid)
-                confirm = input(f"  Delete '{name}'? (y/n): ").strip().lower()
-                if confirm == "y":
+                if input(f"  Delete '{name}'? (y/n): ").strip().lower() == "y":
                     delete_person(pid)
-                    print(f"   '{name}' deleted.\n")
+                    print(f"  '{name}' deleted.\n")
                 else:
                     print("  Cancelled.\n")
             except ValueError:
-                print("   Invalid input.\n")
+                print("  Invalid input.\n")
 
         elif choice == "3":
             rows = list_persons()
             if not rows:
                 print("  Nothing to delete.\n")
                 continue
-            confirm = input(f"  Delete ALL {len(rows)} person(s)? This cannot be undone. (y/n): ").strip().lower()
-            if confirm == "y":
+            if input(f"  Delete ALL {len(rows)} person(s)? This cannot be undone. (y/n): ").strip().lower() == "y":
                 delete_all()
-                print("   All persons deleted.\n")
+                print("  All persons deleted.\n")
             else:
                 print("  Cancelled.\n")
 
@@ -202,17 +187,17 @@ def main():
             if not rows:
                 continue
             try:
-                pid = int(input("Enter ID to edit: ").strip())
-                ids = [r[0] for r in rows]
+                pid  = int(input("Enter ID to edit: ").strip())
+                ids  = [r[0] for r in rows]
                 if pid not in ids:
-                    print(f"   No person with ID {pid}.\n")
+                    print(f"  No person with ID {pid}.\n")
                     continue
-                name = next(r[1] for r in rows if r[0] == pid)
+                name        = next(r[1] for r in rows if r[0] == pid)
                 new_reminder = input(f"  New reminder for '{name}': ").strip()
                 update_reminder(pid, new_reminder)
                 print(f"  Reminder updated for '{name}'.\n")
             except ValueError:
-                print("   Invalid input.\n")
+                print("  Invalid input.\n")
 
         elif choice == "5":
             rows = list_persons()
@@ -220,22 +205,22 @@ def main():
             if not rows:
                 continue
             try:
-                pid = int(input("Enter ID to update: ").strip())
-                ids = [r[0] for r in rows]
+                pid  = int(input("Enter ID to update: ").strip())
+                ids  = [r[0] for r in rows]
                 if pid not in ids:
-                    print(f"   No person with ID {pid}.\n")
+                    print(f"  No person with ID {pid}.\n")
                     continue
                 name = next(r[1] for r in rows if r[0] == pid)
                 add_photos_to_person(pid, name)
             except ValueError:
-                print("   Invalid input.\n")
+                print("  Invalid input.\n")
 
         elif choice == "6":
             print("Bye!")
             break
 
         else:
-            print("   Invalid option, try again.\n")
+            print("  Invalid option, try again.\n")
 
 
 if __name__ == "__main__":

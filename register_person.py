@@ -1,16 +1,13 @@
 import cv2
 import json
-import numpy as np
-from deepface import DeepFace
 from database import insert_person, create_table, get_all_persons
-from face_module import compare_embeddings
+from face_module import get_embedding, cosine_similarity
+from camera_utils import capture_frame_interactive
 from config import THRESHOLD
 
 create_table()
 
-print("=== Register New Person ===")
-print("You can capture multiple photos OR load from image files.")
-print()
+print("=== Register New Person ===\n")
 
 name = input("Enter name: ").strip()
 relationship = input("Enter relationship: ").strip()
@@ -19,77 +16,81 @@ reminder = input("Enter reminder message: ").strip()
 embeddings = []
 
 while True:
-    print()
-    print(f"  Photos captured so far: {len(embeddings)}")
-    print("  1. Capture from webcam")
-    print("  2. Load from image file")
-    print("  3. Done (save person)")
-    print("  4. Cancel")
-    choice = input("  Choose: ").strip()
+    print(f"\nCaptured: {len(embeddings)}")
+    print("1. Webcam")
+    print("2. Image file")
+    print("3. Save")
+    print("4. Cancel")
 
+    choice = input("Choose: ")
+
+    # 📸 webcam
     if choice == "1":
-        cap = cv2.VideoCapture(0)
-        print("  Press 'c' to capture, 'q' to cancel.")
-        while True:
-            ret, frame = cap.read()
-            cv2.imshow("Capture - press C", frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('c'):
-                try:
-                    result = DeepFace.represent(frame, model_name="Facenet", enforce_detection=False)
-                    emb = result[0]["embedding"]
-                    embeddings.append(emb)
-                    print(f"   Captured! Total: {len(embeddings)}")
-                except Exception as e:
-                    print(f"  Failed to get embedding: {e}")
-                break
-            elif key == ord('q'):
-                break
-        cap.release()
-        cv2.destroyAllWindows()
+        frame = capture_frame_interactive()
+        if frame is not None:
+            emb = get_embedding(frame)
 
+            if emb:
+                print("Embedding length:", len(emb))  # debug
+                embeddings.append(emb)
+                print("Captured ✔")
+            else:
+                print("Failed ❌")
+
+    # 🖼️ image
     elif choice == "2":
-        path = input("  Enter image file path: ").strip()
-        try:
-            img = cv2.imread(path)
-            if img is None:
-                print("   Could not load image.")
-                continue
-            result = DeepFace.represent(img, model_name="Facenet", enforce_detection=False)
-            emb = result[0]["embedding"]
-            embeddings.append(emb)
-            print(f"   Loaded! Total: {len(embeddings)}")
-        except Exception as e:
-            print(f"   Failed: {e}")
+        path = input("Path: ")
+        img = cv2.imread(path)
 
-    elif choice == "3":
-        if len(embeddings) == 0:
-            print("  No photos captured yet.")
+        if img is None:
+            print("Invalid image ❌")
             continue
 
-        # Average all embeddings into one
-        avg_embedding = np.mean(embeddings, axis=0).tolist()
+        emb = get_embedding(img)
 
-        # Duplicate check
+        if emb:
+            print("Embedding length:", len(emb))
+            embeddings.append(emb)
+            print("Loaded ✔")
+        else:
+            print("Failed ❌")
+
+    # 💾 save
+    elif choice == "3":
+        if len(embeddings) < 3:
+            print("Capture at least 3 images ❌")
+            continue
+
         existing = get_all_persons()
         duplicate = False
+
         for ename, erel, emb_json, ereminder in existing:
-            dist = compare_embeddings(avg_embedding, json.loads(emb_json))
-            if dist < THRESHOLD:
-                print(f"This face looks like '{ename}' already in the database (distance: {dist:.3f}).")
-                confirm = input("  Register anyway? (y/n): ").strip().lower()
-                if confirm != 'y':
-                    print("  Registration cancelled.")
-                    duplicate = True
+            stored_embeddings = json.loads(emb_json)
+
+            for stored_emb in stored_embeddings:
+                score = cosine_similarity(embeddings[0], stored_emb)
+
+                if score > THRESHOLD:
+                    print(f"Looks like {ename} (score {score:.2f})")
+                    confirm = input("Save anyway? (y/n): ")
+
+                    if confirm != "y":
+                        duplicate = True
+                    break
+
+            if duplicate:
                 break
 
         if not duplicate:
-            insert_person(name, relationship, avg_embedding, reminder)
-            print(f"\n '{name}' registered with {len(embeddings)} photo(s)!")
+            insert_person(
+                name,
+                relationship,
+                json.dumps(embeddings),
+                reminder
+            )
+            print(f"\nSaved {name} with {len(embeddings)} samples ✔")
+
         break
 
     elif choice == "4":
-        print("Cancelled.")
         break
-    else:
-        print("  Invalid option.")
