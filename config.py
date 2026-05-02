@@ -1,0 +1,7 @@
+THRESHOLD_HIGH = 0.72   # strict match
+THRESHOLD_LOW = 0.60    # soft match
+
+COOLDOWN_SECONDS = 5
+
+CAMERA_INDEX = 1
+IP_WEBCAM_URL = None
