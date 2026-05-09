@@ -1,26 +1,31 @@
-import pyttsx3
+import asyncio
+import edge_tts
+import os
+import tempfile
+import subprocess
 
-_engine = None
+VOICE = "en-IN-NeerjaNeural"
 
-
-def _get_engine():
-    global _engine
-    if _engine is None:
-        _engine = pyttsx3.init()
-
-        # ✅ better voice tuning
-        _engine.setProperty('rate', 140)
-        _engine.setProperty('volume', 1.0)
-
-        voices = _engine.getProperty('voices')
-        if len(voices) > 1:
-            _engine.setProperty('voice', voices[1].id)  # usually female voice
-
-    return _engine
-
+async def _generate_audio(text: str, file_path: str):
+    communicate = edge_tts.Communicate(text, VOICE, rate="-10%")
+    await communicate.save(file_path)
 
 def speak(text: str):
-    """Speak the given text aloud."""
-    engine = _get_engine()
-    engine.say(text)
-    engine.runAndWait()
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+            path = f.name
+
+        asyncio.run(_generate_audio(text, path))
+
+        # LAG FIX: Added 'nice -n 10' to lower priority and '-nodisp' to save CPU
+        subprocess.run(
+            ["nice", "-n", "10", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        if os.path.exists(path):
+            os.remove(path)
+
+    except Exception as e:
+        print(f"[TTS ERROR] {e}")
