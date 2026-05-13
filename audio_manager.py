@@ -1,93 +1,214 @@
 """
-audio_manager.py — Thread-safe, queue-based speech system.
+audio_manager.py
+Thread-safe queue-based speech manager.
 """
+
 import threading
 import time
 from queue import Queue, Empty
+
 from person_audio import speak as _speak
 
-# Internal state
+
+# =====================================================
+# INTERNAL STATE
+# =====================================================
+
 _speech_queue = Queue()
+
 _stop_event = threading.Event()
+
 _worker_thread = None
 
-# Global Speaking Lock (Mutes the mic when the AI talks)
-is_speaking = False
-_last_message = ""
-_last_time = 0
-MESSAGE_COOLDOWN = 4 
+_speak_lock = threading.Lock()
 
-def speaking():
-    """Returns the current speaking status."""
-    global is_speaking
+# Used by voice assistant to mute mic during speech
+is_speaking = False
+
+# Message cooldown tracking
+_cooldown_map = {}
+
+MESSAGE_COOLDOWN = 10
+
+
+# =====================================================
+# STATUS
+# =====================================================
+
+def speaking() -> bool:
     return is_speaking
 
+
+# =====================================================
+# WORKER THREAD
+# =====================================================
+
 def _worker():
-    """Background worker that pulls messages from the queue and speaks them."""
+
     global is_speaking
+
+    print("[AUDIO MANAGER] Worker started")
+
     while not _stop_event.is_set():
+
         try:
-            # Check for new messages every 0.5 seconds
             message = _speech_queue.get(timeout=0.5)
+
             if message is None:
                 break
 
-            is_speaking = True
+            with _speak_lock:
+                is_speaking = True
+
             try:
-                print(f"[TTS] {message}")
+                print(f"[AUDIO MANAGER] Speaking: {message}")
+
                 _speak(message)
+
             except Exception as e:
                 print(f"[AUDIO MANAGER] Speech Error: {e}")
+
             finally:
-                # Hardware buffer: wait a moment after speaking before opening the mic
-                time.sleep(0.4)
-                is_speaking = False
+
+                time.sleep(0.3)
+
+                with _speak_lock:
+                    is_speaking = False
+
                 _speech_queue.task_done()
 
         except Empty:
             continue
+
         except Exception as e:
-            is_speaking = False
-            print(f"[AUDIO MANAGER] Critical Worker Error: {e}")
+
+            print(f"[AUDIO MANAGER] Worker Crash: {e}")
+
+            with _speak_lock:
+                is_speaking = False
+
+
+# =====================================================
+# START
+# =====================================================
 
 def start():
-    """Initializes the audio worker thread."""
+
     global _worker_thread
+
     if _worker_thread and _worker_thread.is_alive():
         return
+
     _stop_event.clear()
-    _worker_thread = threading.Thread(target=_worker, daemon=True, name="AudioWorker")
+
+    _worker_thread = threading.Thread(
+        target=_worker,
+        daemon=True,
+        name="AudioWorker"
+    )
+
     _worker_thread.start()
+
     print("[AUDIO MANAGER] Started")
 
+
+# =====================================================
+# ENQUEUE
+# =====================================================
+
 def enqueue(message: str, priority: bool = False):
-    """Adds a message to the speech queue with a cooldown filter."""
-    global _last_message, _last_time
+
     if not message:
         return
 
-    # Prevent the AI from saying the same thing repeatedly within the cooldown period
-    current_time = time.time()
-    if message == _last_message and current_time - _last_time < MESSAGE_COOLDOWN:
+    now = time.time()
+
+    last = _cooldown_map.get(message, 0)
+
+    # Skip duplicates during cooldown
+    if now - last < MESSAGE_COOLDOWN:
+        print("[AUDIO MANAGER] Cooldown skip")
         return
 
-    _last_message = message
-    _last_time = current_time
+    _cooldown_map[message] = now
 
-    # Priority clear: stops current queue if an emergency or high-priority alert occurs
+    # Clear queue for priority speech
     if priority:
         with _speech_queue.mutex:
             _speech_queue.queue.clear()
 
     _speech_queue.put(message)
 
+
+# =====================================================
+# NORMAL SPEAK
+# =====================================================
+
 def speak(message: str):
-    """Bridge function for voice_assistant.py to access the queue."""
+
     enqueue(message)
 
+
+# =====================================================
+# DIRECT SPEAK
+# =====================================================
+
+def speak_direct(message: str):
+
+    global is_speaking
+
+    if not message:
+        return
+
+    # Clear pending queue
+    with _speech_queue.mutex:
+        _speech_queue.queue.clear()
+
+    # Wait for current speech to finish
+    waited = 0.0
+
+    while is_speaking and waited < 15:
+
+        time.sleep(0.1)
+
+        waited += 0.1
+
+    with _speak_lock:
+        is_speaking = True
+
+    try:
+
+        print(f"[AUDIO DIRECT] {message}")
+
+        _speak(message)
+
+    except Exception as e:
+
+        print(f"[AUDIO MANAGER] Direct Speech Error: {e}")
+
+    finally:
+
+        with _speak_lock:
+            is_speaking = False
+
+
+# =====================================================
+# STOP
+# =====================================================
+
 def stop():
-    """Stops the audio manager worker."""
-    global _stop_event
+
+    global _worker_thread
+
     _stop_event.set()
+
+    try:
+        _speech_queue.put(None)
+
+    except:
+        pass
+
     if _worker_thread:
-        _worker_thread.join()
+        _worker_thread.join(timeout=3)
+
+    print("[AUDIO MANAGER] Stopped")

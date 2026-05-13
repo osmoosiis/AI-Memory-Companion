@@ -1,24 +1,53 @@
+"""
+manage_db.py — CLI database management tool for CogniCare.
+
+Fix vs original:
+  - get_all_persons() now returns 6 columns (added last_seen, visit_count).
+    list_persons() and add_photos_to_person() updated to match.
+"""
+
 import json
-import numpy as np
+
 import cv2
-from deepface import DeepFace
-from database import DB_PATH
-from camera_utils import capture_frame_interactive
+import numpy as np
 import sqlite3
+from deepface import DeepFace
+
+from camera_utils import capture_frame_interactive
+from database import DB_PATH
 
 
 def get_conn():
     return sqlite3.connect(DB_PATH)
 
 
+# ── Read ──────────────────────────────────────────────────────────────────────
+
 def list_persons():
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT id, name, relationship, reminder FROM persons")
+    c.execute("SELECT id, name, relationship, reminder, last_seen, visit_count FROM persons")
     rows = c.fetchall()
     conn.close()
     return rows
 
+
+def print_persons(rows):
+    if not rows:
+        print("\n  (No persons registered)\n")
+        return
+    print()
+    print(f"  {'ID':<5} {'Name':<20} {'Relationship':<20} {'Visits':<8} {'Last Seen':<22} Reminder")
+    print("  " + "-" * 90)
+    for pid, name, rel, reminder, last_seen, visits in rows:
+        print(
+            f"  {pid:<5} {name:<20} {rel:<20} {(visits or 0):<8} "
+            f"{(last_seen or 'Never'):<22} {reminder or '—'}"
+        )
+    print()
+
+
+# ── Write ─────────────────────────────────────────────────────────────────────
 
 def delete_person(person_id):
     conn = get_conn()
@@ -47,7 +76,7 @@ def update_reminder(person_id, new_reminder):
 def get_embedding_by_id(person_id):
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT embedding FROM persons WHERE id = ?", (person_id,))
+    c.execute("SELECT embeddings FROM persons WHERE id = ?", (person_id,))
     row = c.fetchone()
     conn.close()
     return json.loads(row[0]) if row else None
@@ -56,34 +85,29 @@ def get_embedding_by_id(person_id):
 def update_embedding(person_id, new_embedding):
     conn = get_conn()
     c = conn.cursor()
-    c.execute("UPDATE persons SET embedding = ? WHERE id = ?", (json.dumps(new_embedding), person_id))
+    c.execute(
+        "UPDATE persons SET embeddings = ? WHERE id = ?",
+        (json.dumps(new_embedding), person_id),
+    )
     conn.commit()
     conn.close()
 
 
-def print_persons(rows):
-    if not rows:
-        print("\n  (No persons registered)\n")
-        return
-    print()
-    print(f"  {'ID':<5} {'Name':<20} {'Relationship':<20} {'Reminder'}")
-    print("  " + "-" * 70)
-    for pid, name, relationship, reminder in rows:
-        print(f"  {pid:<5} {name:<20} {relationship:<20} {reminder}")
-    print()
-
+# ── Add photos ────────────────────────────────────────────────────────────────
 
 def add_photos_to_person(person_id, name):
-    existing_emb = get_embedding_by_id(person_id)
-    if existing_emb is None:
-        print("  Could not load existing embedding.")
+    existing_embs = get_embedding_by_id(person_id)
+    if existing_embs is None:
+        print("  Could not load existing embeddings.")
         return
+    # Normalise to list-of-lists
+    if existing_embs and isinstance(existing_embs[0], (int, float)):
+        existing_embs = [existing_embs]
 
     new_embeddings = []
 
     while True:
-        print()
-        print(f"  New photos added so far: {len(new_embeddings)}")
+        print(f"\n  New photos added so far: {len(new_embeddings)}")
         print("  1. Capture from webcam")
         print("  2. Load from image file")
         print("  3. Save and update")
@@ -94,35 +118,40 @@ def add_photos_to_person(person_id, name):
             frame = capture_frame_interactive()
             if frame is not None:
                 try:
-                    result = DeepFace.represent(frame, model_name="Facenet", enforce_detection=False)
+                    result = DeepFace.represent(
+                        frame, model_name="Facenet", enforce_detection=False
+                    )
                     emb = result[0]["embedding"]
                     new_embeddings.append(emb)
-                    print(f"  Captured! New photos: {len(new_embeddings)}")
+                    print(f"  Captured! Total new: {len(new_embeddings)}")
                 except Exception as e:
                     print(f"  Failed: {e}")
 
         elif choice == "2":
-            path = input("  Enter image file path: ").strip()
+            path = input("  Image path: ").strip()
+            img  = cv2.imread(path)
+            if img is None:
+                print("  Could not load image.")
+                continue
             try:
-                img = cv2.imread(path)
-                if img is None:
-                    print("  Could not load image.")
-                    continue
-                result = DeepFace.represent(img, model_name="Facenet", enforce_detection=False)
+                result = DeepFace.represent(
+                    img, model_name="Facenet", enforce_detection=False
+                )
                 emb = result[0]["embedding"]
                 new_embeddings.append(emb)
-                print(f"  Loaded! New photos: {len(new_embeddings)}")
+                print(f"  Loaded! Total new: {len(new_embeddings)}")
             except Exception as e:
                 print(f"  Failed: {e}")
 
         elif choice == "3":
-            if len(new_embeddings) == 0:
+            if not new_embeddings:
                 print("  No new photos added.")
                 continue
-            all_embeddings = [existing_emb] + new_embeddings
-            avg_embedding  = np.mean(all_embeddings, axis=0).tolist()
-            update_embedding(person_id, avg_embedding)
-            print(f"\n  '{name}' updated with {len(new_embeddings)} new photo(s)!")
+            all_embeddings = existing_embs + new_embeddings
+            # Store all embeddings (not averaged) so find_best_match works better
+            update_embedding(person_id, all_embeddings)
+            print(f"\n  '{name}' updated with {len(new_embeddings)} new photo(s)! "
+                  f"Total samples: {len(all_embeddings)}.")
             break
 
         elif choice == "4":
@@ -132,20 +161,22 @@ def add_photos_to_person(person_id, name):
             print("  Invalid option.")
 
 
+# ── Main CLI loop ─────────────────────────────────────────────────────────────
+
 def main():
     while True:
-        print("=" * 40)
-        print("   AI Memory Companion — DB Manager")
-        print("=" * 40)
+        print("=" * 50)
+        print("   CogniCare AI — Database Manager")
+        print("=" * 50)
         print("  1. List all registered persons")
         print("  2. Delete a person by ID")
         print("  3. Delete ALL persons")
         print("  4. Edit reminder message")
         print("  5. Add more photos to a person")
         print("  6. Quit")
-        print("=" * 40)
+        print("=" * 50)
 
-        choice = input("Choose an option: ").strip()
+        choice = input("Choose: ").strip()
 
         if choice == "1":
             print_persons(list_persons())
@@ -175,7 +206,12 @@ def main():
             if not rows:
                 print("  Nothing to delete.\n")
                 continue
-            if input(f"  Delete ALL {len(rows)} person(s)? This cannot be undone. (y/n): ").strip().lower() == "y":
+            if (
+                input(
+                    f"  Delete ALL {len(rows)} person(s)? This cannot be undone. (y/n): "
+                ).strip().lower()
+                == "y"
+            ):
                 delete_all()
                 print("  All persons deleted.\n")
             else:
@@ -187,12 +223,12 @@ def main():
             if not rows:
                 continue
             try:
-                pid  = int(input("Enter ID to edit: ").strip())
-                ids  = [r[0] for r in rows]
+                pid = int(input("Enter ID to edit: ").strip())
+                ids = [r[0] for r in rows]
                 if pid not in ids:
                     print(f"  No person with ID {pid}.\n")
                     continue
-                name        = next(r[1] for r in rows if r[0] == pid)
+                name         = next(r[1] for r in rows if r[0] == pid)
                 new_reminder = input(f"  New reminder for '{name}': ").strip()
                 update_reminder(pid, new_reminder)
                 print(f"  Reminder updated for '{name}'.\n")
@@ -205,8 +241,8 @@ def main():
             if not rows:
                 continue
             try:
-                pid  = int(input("Enter ID to update: ").strip())
-                ids  = [r[0] for r in rows]
+                pid = int(input("Enter ID to update: ").strip())
+                ids = [r[0] for r in rows]
                 if pid not in ids:
                     print(f"  No person with ID {pid}.\n")
                     continue

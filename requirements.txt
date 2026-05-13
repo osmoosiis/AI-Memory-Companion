@@ -1,22 +1,37 @@
-requests>=2.27.1
-numpy>=1.14.0
-pandas>=0.23.4
-gdown>=3.10.1
-tqdm>=4.30.0
-Pillow>=5.2.0
-opencv-python>=4.5.5.64
-tensorflow>=1.9.0
-keras>=2.2.0
+# Python dependencies
+# Install with:  pip install -r requirements.txt
+
+# ── Core vision / ML ──────────────────────────────────────────────────────────
+numpy>=1.24.0
+opencv-python>=4.8.0
 deepface>=0.0.79
 mtcnn>=0.1.0
 retina-face>=0.0.14
-fire>=0.4.0
-gunicorn>=20.1.0
-lightphe>=0.0.15
-lightdsa>=0.0.3
-python-dotenv>=1.0.1
-SpeechRecognition>=3.10.0
-PyAudio>=0.2.11
-pyttsx3>=2.90
+tensorflow>=2.13.0
+keras>=2.13.0
+Pillow>=10.0.0
+
+# ── Face embedding ────────────────────────────────────────────────────────────
+# (deepface pulls these in, but pin for stability)
+requests>=2.31.0
+tqdm>=4.66.0
+gdown>=4.7.0
+
+# ── Speech synthesis ──────────────────────────────────────────────────────────
+edge-tts>=6.1.9          # Online TTS (requires internet + ffplay)
+# pyttsx3>=2.90           # Offline fallback — uncomment if no internet
+
+# ── Speech recognition ────────────────────────────────────────────────────────
+openai-whisper>=20231117  # pip install git+https://github.com/openai/whisper.git
+sounddevice>=0.4.6
+scipy>=1.11.0
+
+# ── Scheduling / async ───────────────────────────────────────────────────────
 APScheduler>=3.10.0
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
 streamlit>=1.35.0
+pandas>=2.0.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.1

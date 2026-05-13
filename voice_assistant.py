@@ -1,134 +1,370 @@
 """
-voice_assistant.py — Whisper-based listener and command handler.
+voice_assistant.py
+Whisper-based voice assistant for CogniCare.
 """
+
 import os
-import whisper
-import sounddevice as sd
-import numpy as np
-import tempfile
-import scipy.io.wavfile as wav
 import threading
 import time
+import tempfile
 from datetime import datetime
 
-# Local imports
+import numpy as np
+import scipy.io.wavfile as wav
+import sounddevice as sd
+import whisper
+
 import audio_manager
+
+from context_engine import (
+    generate_time_response,
+    generate_daily_reminder_summary,
+)
+
 from database import insert_log
 
-# Initialize the Whisper model
-# "small" is a good balance for Pop!_OS performance
-model = whisper.load_model("small")
+
+# =========================================================
+# LOAD WHISPER MODEL
+# =========================================================
+
+print("[WHISPER] Loading model...")
+
+model = whisper.load_model("base")
+
+print("[WHISPER] Model loaded")
+
+
+# =========================================================
+# GLOBALS
+# =========================================================
 
 running = True
 _thread = None
 
-def record_audio(duration=3, samplerate=16000):
-    """Records a short snippet of audio from the microphone."""
+
+# =========================================================
+# RECORD AUDIO
+# =========================================================
+
+def record_audio(
+    duration: float = 3,
+    samplerate: int = 16000
+) -> np.ndarray:
+
+    print("[VOICE] Listening...")
+
     audio = sd.rec(
         int(duration * samplerate),
         samplerate=samplerate,
         channels=1,
         dtype="float32"
     )
-    sd.wait()
-    return np.squeeze(audio)
 
-def transcribe(audio, samplerate=16000):
-    """Converts recorded audio to text using Whisper."""
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+    sd.wait()
+
+    audio = np.squeeze(audio)
+
+    return audio
+
+
+# =========================================================
+# TRANSCRIBE
+# =========================================================
+
+def transcribe(audio: np.ndarray, samplerate: int = 16000) -> str:
+
+    # Skip silence
+    volume = np.abs(audio).mean()
+
+    if volume < 0.01:
+        return ""
+
+    with tempfile.NamedTemporaryFile(
+        suffix=".wav",
+        delete=False
+    ) as f:
+
         path = f.name
+
     try:
+
         wav.write(path, samplerate, audio)
-        # Using language="en" speeds up the inference significantly
-        result = model.transcribe(path, language="en", fp16=False)
+
+        result = model.transcribe(
+            path,
+            language="en",
+            fp16=False
+        )
+
         text = result["text"].strip()
-        
-        # Hallucination filter for silent rooms
-        if any(h in text.lower() for h in ["thank you", "watching", "ご視聴", "subtitle"]):
+
+        junk_phrases = [
+            "thank you",
+            "thanks for watching",
+            "subtitle",
+            "subtitles",
+            "www.",
+            ".com",
+        ]
+
+        if any(j in text.lower() for j in junk_phrases):
             return ""
-            
+
         return text
+
     finally:
+
         if os.path.exists(path):
             os.remove(path)
 
-def handle_command(text):
-    """Processes the transcribed text into actions."""
-    text = text.lower()
-    
-    # ─── LOGIC: DATE AND DAY ───
-    if any(k in text for k in ["day", "date", "today"]):
+
+# =========================================================
+# RESPONSE HELPER
+# =========================================================
+
+def _respond(
+    message: str,
+    log_type: str,
+    log_desc: str,
+    priority: bool = False
+):
+
+    print(f"[ASSISTANT] {message}")
+
+    audio_manager.enqueue(
+        message,
+        priority=priority
+    )
+
+    insert_log(log_type, log_desc)
+
+
+# =========================================================
+# COMMAND HANDLER
+# =========================================================
+
+def handle_command(text: str):
+
+    t = text.lower()
+
+    print(f"[VOICE] Heard: {t}")
+
+    # ==========================================
+    # TIME
+    # ==========================================
+
+    if any(k in t for k in ["time", "clock", "hour"]):
+
+        response = generate_time_response()
+
+        _respond(
+            response,
+            "TIME_QUERY",
+            f"User asked time -> {response}"
+        )
+
+        return
+
+    # ==========================================
+    # DATE
+    # ==========================================
+
+    if any(k in t for k in ["day", "date", "today"]):
+
         now = datetime.now()
-        day_name = now.strftime("%A") # Saturday
-        date_str = now.strftime("%B %d") # May 09
-        
-        response = f"Today is {day_name}, {date_str}."
-        print(f"[ASSISTANT] Responding: {response}")
-        
-        insert_log("VOICE_COMMAND", f"Date Inquiry: {response}")
-        audio_manager.speak(response)
+
+        response = (
+            f"Today is {now.strftime('%A')}, "
+            f"{now.strftime('%B %d, %Y')}."
+        )
+
+        _respond(
+            response,
+            "DATE_QUERY",
+            response
+        )
+
         return
 
-    elif "reminder" in text:
-        audio_manager.speak("I have listed your reminders on the dashboard for you.")
-        insert_log("VOICE_COMMAND", "User checked reminders.")
-        return
-    
-    # Add a fallback for names (e.g., "Who are you?")
-    elif "who are you" in text or "your name" in text:
-        audio_manager.speak("I am your memory companion, here to help you.")
+    # ==========================================
+    # REMINDERS
+    # ==========================================
+
+    if any(k in t for k in ["reminder", "schedule", "task"]):
+
+        response = generate_daily_reminder_summary()
+
+        _respond(
+            response,
+            "REMINDER_QUERY",
+            "User checked reminders"
+        )
+
         return
 
-    else:
-        print(f"[ASSISTANT] No command match for: {text}")
+    # ==========================================
+    # SAFETY
+    # ==========================================
+
+    if any(k in t for k in [
+        "where am i",
+        "am i safe",
+        "where is this"
+    ]):
+
+        response = (
+            "You are at home. "
+            "You are safe."
+        )
+
+        _respond(
+            response,
+            "ORIENTATION_QUERY",
+            response
+        )
+
+        return
+
+    # ==========================================
+    # IDENTITY
+    # ==========================================
+
+    if any(k in t for k in [
+        "who are you",
+        "your name"
+    ]):
+
+        response = (
+            "I am CogniCare, "
+            "your memory companion."
+        )
+
+        _respond(
+            response,
+            "IDENTITY_QUERY",
+            response
+        )
+
+        return
+
+    # ==========================================
+    # HELP
+    # ==========================================
+
+    if any(k in t for k in [
+        "help",
+        "emergency",
+        "call"
+    ]):
+
+        response = (
+            "I am alerting your caregiver now."
+        )
+
+        _respond(
+            response,
+            "HELP_REQUEST",
+            response,
+            priority=True
+        )
+
+        return
+
+    # ==========================================
+    # REMINDER ACK
+    # ==========================================
+
+    from reminder_engine import check_voice_acknowledgement
+
+    if check_voice_acknowledgement(t):
+
+        response = (
+            "Okay. "
+            "I marked that reminder complete."
+        )
+
+        _respond(
+            response,
+            "REMINDER_ACK",
+            response
+        )
+
+        return
+
+    print(f"[VOICE] No command match: {t}")
+
+
+# =========================================================
+# LISTEN LOOP
+# =========================================================
 
 def listen_loop():
-    """Main loop that continuously listens when the AI is not speaking."""
+
     global running
-    print("[WHISPER] Voice assistant service started")
-    
-    last_speech_time = 0
+
+    print("[WHISPER] Voice assistant started")
 
     while running:
+
         try:
-            # Check if the AI is currently talking via the audio_manager flag
-            if audio_manager.is_speaking:
-                last_speech_time = time.time()
-                time.sleep(0.5)
+
+            # Don't listen while speaking
+            if audio_manager.speaking():
+
+                time.sleep(0.2)
+
                 continue
 
-            # Muzzle Logic: Wait 2 seconds after the AI finishes speaking before listening
-            if time.time() - last_speech_time < 2.0:
-                time.sleep(0.1)
-                continue
-
-            # Capture audio
             audio = record_audio()
-            
-            # Final check before transcription to ensure silence
-            if audio_manager.is_speaking:
+
+            # Recheck after recording
+            if audio_manager.speaking():
+
                 continue
 
-            text = transcribe(audio).strip()
+            text = transcribe(audio)
 
-            if len(text) > 3:
-                print(f"[WHISPER RAW] {text}")
+            if text and len(text.strip()) > 2:
+
                 handle_command(text)
 
         except Exception as e:
+
             print(f"[WHISPER ERROR] {e}")
+
             time.sleep(1)
 
+
+# =========================================================
+# START
+# =========================================================
+
 def start():
-    """Starts the voice assistant in a background thread."""
-    global _thread, running
+
+    global _thread
+    global running
+
     if _thread and _thread.is_alive():
         return
+
     running = True
-    _thread = threading.Thread(target=listen_loop, daemon=True)
+
+    _thread = threading.Thread(
+        target=listen_loop,
+        daemon=True,
+        name="VoiceThread"
+    )
+
     _thread.start()
 
+
+# =========================================================
+# STOP
+# =========================================================
+
 def stop():
-    """Stops the voice assistant."""
+
     global running
+
     running = False

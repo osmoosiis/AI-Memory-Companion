@@ -1,31 +1,76 @@
+"""
+person_audio.py
+Edge-TTS synthesis + ffplay playback.
+"""
+
 import asyncio
-import edge_tts
 import os
-import tempfile
 import subprocess
+import tempfile
+
+import edge_tts
 
 VOICE = "en-IN-NeerjaNeural"
 
+
 async def _generate_audio(text: str, file_path: str):
-    communicate = edge_tts.Communicate(text, VOICE, rate="-10%")
+    communicate = edge_tts.Communicate(
+        text=text,
+        voice=VOICE,
+        rate="-10%"
+    )
+
     await communicate.save(file_path)
 
+
 def speak(text: str):
+    """
+    Synthesise and play audio synchronously.
+    Called from AudioWorker thread.
+    """
+
+    if not text or not text.strip():
+        return
+
+    path = None
+
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+        print(f"[TTS] Generating: {text}")
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".mp3"
+        ) as f:
             path = f.name
 
+        # Generate MP3 using Edge-TTS
         asyncio.run(_generate_audio(text, path))
 
-        # LAG FIX: Added 'nice -n 10' to lower priority and '-nodisp' to save CPU
+        # Play audio
         subprocess.run(
-            ["nice", "-n", "10", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path],
+            [
+                "ffplay",
+                "-nodisp",
+                "-autoexit",
+                "-loglevel",
+                "quiet",
+                "-af",
+                "volume=1.0",
+                path
+            ],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=subprocess.DEVNULL,
         )
 
-        if os.path.exists(path):
-            os.remove(path)
+        print("[TTS] Playback finished")
 
     except Exception as e:
         print(f"[TTS ERROR] {e}")
+
+    finally:
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+
+        except Exception as e:
+            print(f"[TTS CLEANUP ERROR] {e}")
