@@ -1,7 +1,3 @@
-"""
-state.py — Global runtime state shared across all modules.
-No circular imports; pure data container.
-"""
 import time
 
 
@@ -14,16 +10,16 @@ class State:
         self.voice_buffer        = ""
         self.speaking            = False
 
-        # ── "Who Is This?" timer (Objective 1) ──────────────────────────────
+        # "Who Is This?" timer (Objective 1) 
         # Tracks how long the current face has been continuously stable
         self.face_stable_since   = None          # float (time.time()) or None
         self.who_whispered       = set()         # names already whispered this session
 
-        # ── Unknown-person safety tracking ──────────────────────────────────
+        # Unknown-person safety tracking 
         self.unknown_consecutive = 0             # frames labelled Unknown in a row
         self.unknown_alerted     = False         # prevent repeated unknown alerts
 
-        # ── Session stats ────────────────────────────────────────────────────
+        #  Session stats 
         self.session_start       = time.time()
 
 

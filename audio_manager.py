@@ -1,18 +1,9 @@
-"""
-audio_manager.py
-Thread-safe queue-based speech manager.
-"""
-
 import threading
 import time
 from queue import Queue, Empty
 
 from person_audio import speak as _speak
 
-
-# =====================================================
-# INTERNAL STATE
-# =====================================================
 
 _speech_queue = Queue()
 
@@ -28,20 +19,14 @@ is_speaking = False
 # Message cooldown tracking
 _cooldown_map = {}
 
-MESSAGE_COOLDOWN = 10
+MESSAGE_COOLDOWN = 60   # seconds — raised from 10 to prevent silently dropping reminders
 
 
-# =====================================================
-# STATUS
-# =====================================================
 
 def speaking() -> bool:
     return is_speaking
 
 
-# =====================================================
-# WORKER THREAD
-# =====================================================
 
 def _worker():
 
@@ -62,7 +47,6 @@ def _worker():
 
             try:
                 print(f"[AUDIO MANAGER] Speaking: {message}")
-
                 _speak(message)
 
             except Exception as e:
@@ -88,9 +72,6 @@ def _worker():
                 is_speaking = False
 
 
-# =====================================================
-# START
-# =====================================================
 
 def start():
 
@@ -112,22 +93,26 @@ def start():
     print("[AUDIO MANAGER] Started")
 
 
-# =====================================================
-# ENQUEUE
-# =====================================================
 
-def enqueue(message: str, priority: bool = False):
+def enqueue(message: str, priority: bool = False, force: bool = False):
+    """
+    Add a message to the speech queue.
 
-    if not message:
+    Args:
+        message:  Text to speak.
+        priority: If True, clears the queue before adding (urgent messages).
+        force:    If True, bypasses the cooldown check (use for reminders).
+    """
+
+    if not message or not message.strip():
         return
 
-    now = time.time()
-
+    now  = time.time()
     last = _cooldown_map.get(message, 0)
 
-    # Skip duplicates during cooldown
-    if now - last < MESSAGE_COOLDOWN:
-        print("[AUDIO MANAGER] Cooldown skip")
+    # Skip duplicates during cooldown unless forced
+    if not force and (now - last < MESSAGE_COOLDOWN):
+        print(f"[AUDIO MANAGER] Cooldown skip: {message[:40]}...")
         return
 
     _cooldown_map[message] = now
@@ -140,37 +125,29 @@ def enqueue(message: str, priority: bool = False):
     _speech_queue.put(message)
 
 
-# =====================================================
-# NORMAL SPEAK
-# =====================================================
+
 
 def speak(message: str):
-
     enqueue(message)
 
 
-# =====================================================
-# DIRECT SPEAK
-# =====================================================
 
 def speak_direct(message: str):
 
     global is_speaking
 
-    if not message:
+    if not message or not message.strip():
         return
 
     # Clear pending queue
     with _speech_queue.mutex:
         _speech_queue.queue.clear()
 
-    # Wait for current speech to finish
+    # Wait for current speech to finish (max 15s)
     waited = 0.0
 
     while is_speaking and waited < 15:
-
         time.sleep(0.1)
-
         waited += 0.1
 
     with _speak_lock:
@@ -179,7 +156,6 @@ def speak_direct(message: str):
     try:
 
         print(f"[AUDIO DIRECT] {message}")
-
         _speak(message)
 
     except Exception as e:
@@ -192,9 +168,7 @@ def speak_direct(message: str):
             is_speaking = False
 
 
-# =====================================================
-# STOP
-# =====================================================
+
 
 def stop():
 
@@ -204,8 +178,7 @@ def stop():
 
     try:
         _speech_queue.put(None)
-
-    except:
+    except Exception:
         pass
 
     if _worker_thread:

@@ -1,10 +1,3 @@
-"""
-manage_db.py — CLI database management tool for CogniCare.
-
-Fix vs original:
-  - get_all_persons() now returns 6 columns (added last_seen, visit_count).
-    list_persons() and add_photos_to_person() updated to match.
-"""
 
 import json
 

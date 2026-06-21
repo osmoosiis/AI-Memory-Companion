@@ -1,8 +1,3 @@
-"""
-person_audio.py
-Edge-TTS synthesis + ffplay playback.
-"""
-
 import asyncio
 import os
 import subprocess

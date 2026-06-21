@@ -1,7 +1,3 @@
-"""
-memory_manager.py — Convenience helpers for person memory queries.
-"""
-
 from database import get_conn
 
 

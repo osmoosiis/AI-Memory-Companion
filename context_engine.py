@@ -1,15 +1,3 @@
-"""
-context_engine.py — Contextual message generator for CogniCare AI.
-
-Improvements vs original:
-  - generate_recognition_message() follows the 4-part dementia-friendly
-    structure: Hook → Context → Instruction → Confirmation cue.
-  - generate_reminder_message() uses category-specific, single-verb
-    instructions (Medication, Meal, Hydration, Safety, Orientation, ADL).
-  - New helpers: generate_orientation_message(), generate_safety_alert().
-  - All existing public functions preserved for backwards compatibility.
-"""
-
 from datetime import datetime, date
 from database import get_all_reminders
 

@@ -1,8 +1,3 @@
-"""
-main.py — CogniCare AI entry point.
-STABLE VERSION — fixed repeated announcements + voice starvation.
-"""
-
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
@@ -83,7 +78,7 @@ def load_known_persons():
 
             loaded = json.loads(embedding_json)
 
-            # Normalize single embedding
+            # Normalize single embedding stored as flat list
             if loaded and isinstance(loaded[0], (int, float)):
                 loaded = [loaded]
 
@@ -118,7 +113,6 @@ start_reminders()
 
 start_voice()
 
-
 # Startup orientation
 enqueue(generate_orientation_message())
 
@@ -133,7 +127,8 @@ cap = cv.VideoCapture(source)
 
 if not cap.isOpened():
 
-    print("[CAMERA ERROR] Could not open camera")
+    print(f"[CAMERA ERROR] Could not open camera (source={source}). "
+          "Check CAMERA_INDEX in config.py.")
 
     exit()
 
@@ -142,23 +137,20 @@ if not cap.isOpened():
 # TRACKING VARIABLES
 # =========================================================
 
-last_visit_times = {}
-
-last_announced_person = None
-
-last_ai_process_time = 0.0
-
-AI_PROCESS_INTERVAL = 0.7
-
+last_visit_times        = {}
+last_announced_person   = None
+last_ai_process_time    = 0.0
+AI_PROCESS_INTERVAL     = 0.7
 daily_summary_spoken_date = None
+last_seen_face_time     = time.time()
+FACE_LOST_RESET_TIME    = 8
+last_recognition_time   = {}
+RECOGNITION_COOLDOWN    = 60
 
-last_seen_face_time = time.time()
-
-FACE_LOST_RESET_TIME = 8
-
-last_recognition_time = {}
-
-RECOGNITION_COOLDOWN = 60
+# These are set inside the AI block and read in announcement/whisper blocks
+_current_person_obj     = None   # the best-matching person dict (confident only)
+_current_confident      = False  # whether the last AI result was a confident match
+_current_score          = 0.0
 
 
 # =========================================================
@@ -181,10 +173,6 @@ while True:
 
     now_ts = time.time()
 
-    detected_person_obj = None
-
-    score = 0.0
-
 
     # =====================================================
     # AI PROCESSING
@@ -196,107 +184,100 @@ while True:
 
         embedding = get_embedding(display_frame)
 
-        current_label = "Unknown"
+        current_label     = "Unknown"
+        _current_person_obj = None
+        _current_confident  = False
+        _current_score      = 0.0
 
         if embedding:
 
-            detected_person_obj, score = find_best_match(
+            person_obj, score, confident = find_best_match(
                 embedding,
                 known_persons
             )
 
-            if detected_person_obj:
+            if person_obj is not None:
+                # Always store for UI display (even uncertain matches)
+                _current_person_obj = person_obj
+                _current_score      = score
 
-                current_label = detected_person_obj["name"]
+                if confident:
+                    # Only use the real name for state tracking when confident
+                    current_label      = person_obj["name"]
+                    _current_confident = True
+                else:
+                    # Uncertain — show "Maybe" in overlay but keep state as Unknown
+                    current_label = f"Maybe {person_obj['name']}"
 
-        # Stability buffer
-        state.identity_buffer.append(current_label)
+        # Stability buffer — only feed confirmed names or Unknown
+        # NOTE: person_obj may be unbound if embedding was None, so use _current_confident
+        stable_input = (
+            _current_person_obj["name"]
+            if (_current_confident and _current_person_obj)
+            else "Unknown"
+        )
+
+        state.identity_buffer.append(stable_input)
 
         if len(state.identity_buffer) > STABILITY_THRESHOLD:
-
             state.identity_buffer.pop(0)
 
         if len(set(state.identity_buffer)) == 1:
-
             state.stable_label = state.identity_buffer[0]
 
         # Unknown tracking
         if state.stable_label == "Unknown":
-
             state.unknown_consecutive += 1
-
         else:
-
             state.unknown_consecutive = 0
-
-            state.unknown_alerted = False
+            state.unknown_alerted     = False
 
 
     # =====================================================
-    # RECOGNITION ANNOUNCEMENTS
+    # RECOGNITION ANNOUNCEMENTS  (confident matches only)
     # =====================================================
 
     if (
         state.stable_label != "Unknown"
-        and
-        state.stable_label != last_announced_person
+        and state.stable_label != last_announced_person
+        and _current_confident                          # ← NEW: must be confident
+        and _current_person_obj is not None
     ):
 
-        now_ts2 = time.time()
-
-        last_visit = last_visit_times.get(
-            state.stable_label,
-            0
-        )
-
-        last_rec = last_recognition_time.get(
-            state.stable_label,
-            0
-        )
+        now_ts2    = now_ts
+        last_visit = last_visit_times.get(state.stable_label, 0)
+        last_rec   = last_recognition_time.get(state.stable_label, 0)
 
         if (
             (now_ts2 - last_visit) > VISIT_COOLDOWN
-            and
-            (now_ts2 - last_rec) > RECOGNITION_COOLDOWN
+            and (now_ts2 - last_rec) > RECOGNITION_COOLDOWN
         ):
 
             update_person_last_seen(state.stable_label)
 
-            last_visit_times[state.stable_label] = now_ts2
-
+            last_visit_times[state.stable_label]      = now_ts2
             last_recognition_time[state.stable_label] = now_ts2
 
-            if detected_person_obj:
-
-                detected_person_obj["visit_count"] = (
-                    detected_person_obj.get("visit_count", 0)
-                    + 1
-                )
+            _current_person_obj["visit_count"] = (
+                _current_person_obj.get("visit_count", 0) + 1
+            )
 
         if not speaking():
 
-            person = detected_person_obj or {
-                "name": state.stable_label,
-                "relationship": "visitor"
-            }
-
-            # SHORTER speech
             msg = (
-                f"This is {person.get('name')}, "
-                f"your {person.get('relationship', 'visitor')}."
+                f"This is {_current_person_obj.get('name')}, "
+                f"your {_current_person_obj.get('relationship', 'visitor')}."
             )
 
             enqueue(msg)
 
-            last_announced_person = state.stable_label
-
-            state.last_person = state.stable_label
-
-            state.face_stable_since = now_ts2
+            last_announced_person  = state.stable_label
+            state.last_person      = state.stable_label
+            state.face_stable_since = now_ts
 
             insert_log(
                 "RECOGNITION",
-                f"Recognized: {state.stable_label} ({score:.2f})"
+                f"Recognized: {state.stable_label} ({_current_score:.2f})"
             )
 
 
@@ -306,30 +287,21 @@ while True:
 
     if (
         state.stable_label != "Unknown"
-        and
-        state.face_stable_since is not None
-        and
-        (now_ts - state.face_stable_since) >= WHO_IS_THIS_DELAY
-        and
-        state.stable_label not in state.who_whispered
-        and
-        detected_person_obj is not None
-        and
-        not speaking()
+        and state.face_stable_since is not None
+        and (now_ts - state.face_stable_since) >= WHO_IS_THIS_DELAY
+        and state.stable_label not in state.who_whispered
+        and _current_person_obj is not None
+        and _current_confident                          # ← only whisper when confident
+        and not speaking()
     ):
 
-        whisper_msg = generate_who_is_this_whisper(
-            detected_person_obj
-        )
+        whisper_msg = generate_who_is_this_whisper(_current_person_obj)
 
         enqueue(whisper_msg)
 
         state.who_whispered.add(state.stable_label)
 
-        insert_log(
-            "WHO_IS_THIS",
-            f"Whispered: {state.stable_label}"
-        )
+        insert_log("WHO_IS_THIS", f"Whispered: {state.stable_label}")
 
 
     # =====================================================
@@ -338,24 +310,17 @@ while True:
 
     if (
         state.unknown_consecutive >= UNKNOWN_ALERT_FRAMES
-        and
-        not state.unknown_alerted
-        and
-        not speaking()
+        and not state.unknown_alerted
+        and not speaking()
     ):
 
-        alert_msg = generate_unknown_alert(
-            state.unknown_consecutive
-        )
+        alert_msg = generate_unknown_alert(state.unknown_consecutive)
 
         enqueue(alert_msg, priority=True)
 
         state.unknown_alerted = True
 
-        insert_log(
-            "UNKNOWN_ALERT",
-            f"Unknown person detected"
-        )
+        insert_log("UNKNOWN_ALERT", "Unknown person detected")
 
 
     # =====================================================
@@ -363,32 +328,26 @@ while True:
     # =====================================================
 
     if state.stable_label != "Unknown":
-
         last_seen_face_time = time.time()
 
     if time.time() - last_seen_face_time > FACE_LOST_RESET_TIME:
 
-        last_announced_person = None
-
-        state.last_person = None
-
+        last_announced_person   = None
+        state.last_person       = None
         state.face_stable_since = None
-
         state.who_whispered.clear()
 
 
     # =====================================================
-    # DAILY SUMMARY
+    # DAILY SUMMARY  (once per day at DAILY_SUMMARY_HOUR)
     # =====================================================
 
     now_dt = datetime.now()
 
     if (
         now_dt.hour == DAILY_SUMMARY_HOUR
-        and
-        now_dt.minute == 0
-        and
-        daily_summary_spoken_date != now_dt.date()
+        and now_dt.minute == 0
+        and daily_summary_spoken_date != now_dt.date()
     ):
 
         speak_summary()
@@ -400,25 +359,36 @@ while True:
     # UI DRAWING
     # =====================================================
 
-    is_known = state.stable_label != "Unknown"
-
-    status_color = (
-        (0, 220, 0)
-        if is_known
-        else (0, 80, 255)
+    is_known = (
+        state.stable_label != "Unknown"
+        and _current_confident
     )
 
-    cv.rectangle(
-        display_frame,
-        (0, 0),
-        (640, 60),
-        (30, 30, 30),
-        -1
+    is_maybe = (
+        _current_person_obj is not None
+        and not _current_confident
     )
+
+    if is_known:
+        status_color = (0, 220, 0)       # green
+    elif is_maybe:
+        status_color = (0, 200, 255)     # yellow-ish
+    else:
+        status_color = (0, 80, 255)      # red/orange for unknown
+
+    # Determine display label
+    if is_known:
+        display_label = state.stable_label
+    elif is_maybe and _current_person_obj:
+        display_label = f"Maybe {_current_person_obj['name']}"
+    else:
+        display_label = "Unknown"
+
+    cv.rectangle(display_frame, (0, 0), (640, 60), (30, 30, 30), -1)
 
     cv.putText(
         display_frame,
-        f"CogniCare AI | {state.stable_label}",
+        f"CogniCare AI | {display_label}",
         (20, 40),
         cv.FONT_HERSHEY_SIMPLEX,
         0.7,
@@ -426,9 +396,18 @@ while True:
         2,
     )
 
-    # Speaking indicator
-    if speaking():
+    if _current_score > 0:
+        cv.putText(
+            display_frame,
+            f"Score: {_current_score:.2f}",
+            (500, 40),
+            cv.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (180, 180, 180),
+            1,
+        )
 
+    if speaking():
         cv.putText(
             display_frame,
             "Speaking...",
@@ -439,13 +418,9 @@ while True:
             1,
         )
 
-    cv.imshow(
-        "CogniCare AI",
-        display_frame
-    )
+    cv.imshow("CogniCare AI", display_frame)
 
     if cv.waitKey(1) & 0xFF == ord("q"):
-
         break
 
 
@@ -457,9 +432,6 @@ cap.release()
 
 cv.destroyAllWindows()
 
-insert_log(
-    "SYSTEM",
-    "CogniCare AI shut down"
-)
+insert_log("SYSTEM", "CogniCare AI shut down")
 
 print("[COGNICARE] Shutdown complete")

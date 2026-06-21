@@ -1,11 +1,3 @@
-"""
-register_person.py — CLI tool to register a new person into CogniCare.
-
-Fix vs original:
-  - insert_person() column is now 'embeddings' (unified in database.py).
-  - get_all_persons() returns 6 columns now — unpacking updated accordingly.
-"""
-
 import cv2
 import json
 
@@ -16,20 +8,21 @@ from config import THRESHOLD
 
 create_table()
 
-print("=== Register New Person ===\n")
+print("=== CogniCare — Register New Person ===\n")
 
 name         = input("Enter name: ").strip()
-relationship = input("Enter relationship: ").strip()
-reminder     = input("Enter reminder message: ").strip()
+relationship = input("Enter relationship (e.g. daughter, caregiver): ").strip()
+reminder     = input("Enter reminder message (optional, press Enter to skip): ").strip()
 
 embeddings = []
 
 while True:
-    print(f"\nCaptured so far: {len(embeddings)} sample(s)")
-    print("1. Capture from webcam")
-    print("2. Load from image file")
-    print("3. Save to database")
-    print("4. Cancel")
+
+    print(f"\n  Samples captured: {len(embeddings)}")
+    print("  1. Capture from webcam")
+    print("  2. Load from image file")
+    print("  3. Save to database")
+    print("  4. Cancel")
 
     choice = input("Choose: ").strip()
 
@@ -40,47 +33,58 @@ while True:
             emb = get_embedding(frame)
             if emb:
                 embeddings.append(emb)
-                print(f"  Captured ✔  (total: {len(embeddings)})")
+                print(f"  ✔ Sample captured. Total: {len(embeddings)}")
             else:
-                print("  No face detected ❌")
+                print("  ✖ No face detected in this frame. Move closer to the camera and try again.")
 
     # ── Image file ────────────────────────────────────────────────────────────
     elif choice == "2":
         path = input("  Image path: ").strip()
         img  = cv2.imread(path)
         if img is None:
-            print("  Could not load image ❌")
+            print(f"  ✖ Could not load image at '{path}'. Check the path and try again.")
             continue
         emb = get_embedding(img)
         if emb:
             embeddings.append(emb)
-            print(f"  Loaded ✔  (total: {len(embeddings)})")
+            print(f"  ✔ Face extracted. Total: {len(embeddings)}")
         else:
-            print("  No face detected ❌")
+            print("  ✖ No face detected in this image. Try a clearer, front-facing photo.")
 
     # ── Save ──────────────────────────────────────────────────────────────────
     elif choice == "3":
         if len(embeddings) < 3:
-            print("  Please capture at least 3 samples for reliable recognition ❌")
+            print(f"  ✖ Need at least 3 samples for reliable recognition. "
+                  f"You have {len(embeddings)}. Please capture more.")
             continue
 
-        # Duplicate check
-        existing  = get_all_persons()   # returns 6-tuple now
+        # Duplicate check using raw cosine similarity (not find_best_match)
+        existing  = get_all_persons()   # (name, rel, emb_json, reminder, last_seen, visit_count)
         duplicate = False
 
         for ename, erel, emb_json, ereminder, elast_seen, evisit_count in existing:
-            stored_embeddings = json.loads(emb_json)
-            # Normalise stored format
+
+            try:
+                stored_embeddings = json.loads(emb_json)
+            except Exception:
+                continue
+
+            # Normalize flat single embedding
             if stored_embeddings and isinstance(stored_embeddings[0], (int, float)):
                 stored_embeddings = [stored_embeddings]
 
             for stored_emb in stored_embeddings:
-                score = cosine_similarity(embeddings[0], stored_emb)
-                if score > THRESHOLD:
-                    print(f"  Warning: looks similar to {ename} (score {score:.2f})")
-                    confirm = input("  Save anyway? (y/n): ").strip().lower()
-                    if confirm != "y":
-                        duplicate = True
+                # Compare each new sample against each stored embedding
+                for new_emb in embeddings:
+                    score = cosine_similarity(new_emb, stored_emb)
+                    if score >= THRESHOLD:
+                        print(f"\n  ⚠ This face looks very similar to '{ename}' "
+                              f"already in the database (score: {score:.2f}).")
+                        confirm = input("  Save anyway? (y/n): ").strip().lower()
+                        if confirm != "y":
+                            duplicate = True
+                        break
+                if duplicate:
                     break
 
             if duplicate:
@@ -88,11 +92,13 @@ while True:
 
         if not duplicate:
             insert_person(name, relationship, json.dumps(embeddings), reminder)
-            print(f"\n  ✅ Saved '{name}' with {len(embeddings)} sample(s).")
+            print(f"\n   '{name}' registered successfully with {len(embeddings)} sample(s).")
+            print(f"     They will now be recognized by CogniCare.")
         break
 
     elif choice == "4":
-        print("  Cancelled.")
+        print("  Registration cancelled.")
         break
+
     else:
-        print("  Invalid option.")
+        print("  Invalid option. Please enter 1, 2, 3, or 4.")

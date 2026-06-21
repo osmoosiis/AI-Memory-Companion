@@ -34,7 +34,6 @@ CAT_ICONS = {
     "Safety": "🔒", "Orientation": "🧭", "Appointment": "📅", "General": "📌",
 }
 
-# --- CSS STYLES (Keep as provided, they are excellent) ---
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"]{background:#F4FBF8}
@@ -105,9 +104,9 @@ with st.sidebar:
     mode = st.radio("View", ["Patient view", "Caregiver", "Register face"], label_visibility="collapsed")
 
     st.divider()
-    
-    persons_count  = len(get_all_persons())
-    pending_count  = sum(1 for r in get_all_reminders() if r[4] == 0)
+
+    persons_count = len(get_all_persons())
+    pending_count = sum(1 for r in get_all_reminders() if r[4] == 0)
     st.markdown(f"""
     <div style="font-size:12px;color:#0F6E56">
       <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#1D9E75;margin-right:6px"></span>System online
@@ -155,13 +154,19 @@ def render_patient():
               <div class='task-time'>at {t[2]}</div>
             </div>
             """, unsafe_allow_html=True)
-            if st.button("✅  I have done this", key="pt_done", use_container_width=True):
+            if st.button(" I have done this", key="pt_done", use_container_width=True):
                 mark_reminder_complete(t[0])
                 speak_direct(f"Well done! Your {t[1]} is marked as completed.")
                 st.balloons()
                 st.rerun()
         else:
-            st.markdown("<div style='text-align:center;padding:24px 0'><div style='font-size:36px'>😊</div><div style='color:#0F6E56;font-weight:600;margin-top:6px'>All tasks done!</div></div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div style='text-align:center;padding:24px 0'>"
+                "<div style='font-size:36px'>😊</div>"
+                "<div style='color:#0F6E56;font-weight:600;margin-top:6px'>All tasks done!</div>"
+                "</div>",
+                unsafe_allow_html=True
+            )
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_who:
@@ -179,23 +184,22 @@ def render_patient():
             """, unsafe_allow_html=True)
         else:
             st.markdown("<div style='color:#9BB8AE;font-size:13px;margin-bottom:10px'>No one recognised yet.</div>", unsafe_allow_html=True)
-        
+
         if st.button("🎤  Ask for help", key="pt_help", use_container_width=True):
             msg = "Hello! I am here. How can I help you today?"
             speak_direct(msg)
             st.info(f'Assistant: "{msg}"')
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # --- SOS Section (Logic and UI) ---
     st.markdown("<div class='cg-card'><div class='cg-card-title'>Need help? Press a button below</div>", unsafe_allow_html=True)
     c_sos, c_talk, c_where, c_list = st.columns(4)
-    
+
     with c_sos:
         if st.button("🆘 SOS", key="sos", use_container_width=True):
             speak_direct("Alerting your caregiver. Stay calm.")
             insert_log("CRITICAL_ALERT", "SOS Button Pressed")
             st.error("Alert Sent")
-            
+
     with c_talk:
         if st.button("🎤 Talk", key="talk", use_container_width=True):
             speak_direct("I am listening.")
@@ -208,86 +212,422 @@ def render_patient():
         if st.button("📋 Tasks", key="tasks", use_container_width=True):
             rem_count = len(pending)
             speak_direct(f"You have {rem_count} tasks remaining.")
-    
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ── CAREGIVER VIEW ────────────────────────────────────────────────────────────
 def render_caregiver():
     now = datetime.now()
-    st.markdown(f"## Caregiver overview")
-    
+    st.markdown("## Caregiver overview")
+
     reminders = get_all_reminders()
     pending_n = sum(1 for r in reminders if r[4] == 0)
-    next_rem  = next((r for r in reminders if r[4] == 0), None)
     logs_top  = get_logs(limit=10)
 
-    # Fixed safety check for next_rem
-    next_time = next_rem[2] if next_rem else "—"
-    next_cat = next_rem[3] if next_rem else "None"
+    # FIX: safe access — next_rem may be None when no pending reminders exist
+    next_rem  = next((r for r in reminders if r[4] == 0), None)
+    next_time = next_rem[2] if next_rem is not None else "—"
+    next_cat  = next_rem[3] if next_rem is not None else "None"
+
+    alert_count = sum(1 for l in logs_top if "ALERT" in l[2])
 
     st.markdown(f"""
     <div class='metric-grid'>
       <div class='metric-box'><div class='metric-label'>Known faces</div><div class='metric-value'>{len(get_all_persons())}</div></div>
       <div class='metric-box'><div class='metric-label'>Pending tasks</div><div class='metric-value'>{pending_n}</div></div>
       <div class='metric-box'><div class='metric-label'>Next reminder</div><div class='metric-value'>{next_time}</div><div class='metric-note'>{next_cat}</div></div>
-      <div class='metric-box'><div class='metric-label'>Alerts</div><div class='metric-value'>{sum(1 for l in logs_top if "ALERT" in l[2])}</div></div>
+      <div class='metric-box'><div class='metric-label'>Alerts today</div><div class='metric-value'>{alert_count}</div></div>
     </div>
     """, unsafe_allow_html=True)
 
     tab1, tab2, tab3 = st.tabs(["📋 Schedule", "👁️ Persons", "🕒 Activity log"])
 
+    # ── Schedule tab ──────────────────────────────────────────────────────────
     with tab1:
         c1, c2 = st.columns([1, 1.5])
+
         with c1:
             st.subheader("Add Reminder")
             with st.form("add_rem"):
-                desc = st.text_input("Task")
-                tm = st.time_input("Time")
-                cat = st.selectbox("Category", REMINDER_CATEGORIES)
-                if st.form_submit_button("Save"):
-                    insert_reminder(desc, tm.strftime("%H:%M"), cat)
-                    st.rerun()
+                desc = st.text_input("Task description")
+                tm   = st.time_input("Reminder time")
+                cat  = st.selectbox("Category", REMINDER_CATEGORIES)
+                if st.form_submit_button("Save reminder"):
+                    if desc.strip():
+                        insert_reminder(desc.strip(), tm.strftime("%H:%M"), cat)
+                        st.success(f"Reminder saved: {desc} at {tm.strftime('%H:%M')}")
+                        st.rerun()
+                    else:
+                        st.error("Please enter a task description.")
+
         with c2:
             st.subheader("Current Reminders")
-            for r in reminders:
-                st.write(f"{CAT_ICONS.get(r[3], '📌')} {r[2]} - {r[1]}")
+            if not reminders:
+                st.info("No reminders scheduled.")
+            else:
+                for r in reminders:
+                    rid, text, time_str, category, completed = r
+                    icon   = CAT_ICONS.get(category, "📌")
+                    status = "✅" if completed else "⏳"
+                    col_a, col_b = st.columns([4, 1])
+                    with col_a:
+                        st.markdown(
+                            f"{status} **{time_str}** — {icon} {text} "
+                            f"<span style='color:#9BB8AE;font-size:11px'>({category})</span>",
+                            unsafe_allow_html=True
+                        )
+                    with col_b:
+                        if not completed:
+                            if st.button("🗑", key=f"del_{rid}", help="Delete reminder"):
+                                delete_reminder(rid)
+                                st.rerun()
 
+    # ── Persons tab ───────────────────────────────────────────────────────────
     with tab2:
         persons = get_all_persons()
         if not persons:
-            st.info("No registered faces.")
+            st.info("No registered faces. Use 'Register face' to add people.")
         else:
             for p in persons:
-                st.write(f"**{p[0]}** ({p[1]})")
+                name, rel, _, reminder, last_seen, visits = p
+                last_seen_str = last_seen[:16] if last_seen else "Never"
+                st.markdown(
+                    f"**{name}** — {rel} &nbsp;|&nbsp; "
+                    f"Visits: {visits or 0} &nbsp;|&nbsp; "
+                    f"Last seen: {last_seen_str}"
+                    + (f" &nbsp;|&nbsp; *{reminder}*" if reminder else ""),
+                    unsafe_allow_html=True
+                )
 
+    # ── Activity log tab ──────────────────────────────────────────────────────
     with tab3:
-        for l in get_logs(limit=20):
-            st.text(f"{l[1]} | {l[2]} | {l[3]}")
+        logs = get_logs(limit=50)
+        if not logs:
+            st.info("No activity logged yet.")
+        else:
+            for log_id, ts, event_type, desc in logs:
+                # Colour code by event type
+                if "RECOGNITION" in event_type:
+                    css = "lg-g"
+                elif "ALERT" in event_type or "HELP" in event_type:
+                    css = "lg-a"
+                elif "REMINDER" in event_type:
+                    css = "lg-b"
+                else:
+                    css = "lg-n"
+                st.markdown(
+                    f"<div class='log-row {css}'>"
+                    f"<span class='log-ts'>{ts[11:16]}</span>"
+                    f"<span class='log-type'>{event_type}</span>"
+                    f"<span class='log-desc'>{desc or ''}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+
+# ── REGISTRATION HELPERS ──────────────────────────────────────────────────────
+
+def _augment_and_embed(img: np.ndarray) -> list:
+    """
+    Extract FaceNet embeddings from one image using multiple augmentations
+    (flips, brightness, slight crops) so each real photo produces several
+    training samples — improves recognition accuracy significantly.
+    Returns a list of embedding vectors (may be empty if no face found).
+    """
+    results = []
+
+    def _try(frame):
+        emb = get_embedding(frame)
+        if emb is not None:
+            results.append(emb)
+
+    # 1. Original
+    _try(img)
+
+    # 2. Horizontal flip
+    _try(cv.flip(img, 1))
+
+    # 3. Slightly brighter
+    bright = cv.convertScaleAbs(img, alpha=1.15, beta=15)
+    _try(bright)
+
+    # 4. Slightly darker
+    dark = cv.convertScaleAbs(img, alpha=0.85, beta=-15)
+    _try(dark)
+
+    # 5. Centre crop (90 %)
+    h, w = img.shape[:2]
+    margin_h, margin_w = int(h * 0.05), int(w * 0.05)
+    cropped = img[margin_h: h - margin_h, margin_w: w - margin_w]
+    if cropped.size:
+        _try(cv.resize(cropped, (w, h)))
+
+    # 6. Flip of bright
+    _try(cv.flip(bright, 1))
+
+    return results
+
+
+def _img_to_thumbnail_b64(img: np.ndarray, size: int = 80) -> str:
+    """Resize image and return a base-64 PNG data-URI for inline display."""
+    import base64
+    h, w  = img.shape[:2]
+    scale = size / max(h, w)
+    thumb = cv.resize(img, (int(w * scale), int(h * scale)))
+    _, buf = cv.imencode(".png", thumb)
+    return "data:image/png;base64," + base64.b64encode(buf).decode()
+
+
+def _reg_state_init():
+    defaults = {
+        "reg_embeddings":  [],    # flat list of embedding vectors
+        "reg_previews":    [],    # list of {"b64": ..., "label": ..., "count": N}
+        "reg_processed":   set(), # filenames/keys already processed
+        "reg_cam_idx":     0,     # counter to force camera_input refresh
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+def _process_image(img: np.ndarray, label: str) -> int:
+    """
+    Augment-embed one image, append to session state, return count added.
+    """
+    embs = _augment_and_embed(img)
+    st.session_state.reg_embeddings.extend(embs)
+    b64  = _img_to_thumbnail_b64(img)
+    st.session_state.reg_previews.append({
+        "b64":   b64,
+        "label": label,
+        "count": len(embs),
+    })
+    return len(embs)
 
 
 # ── FACE REGISTRATION ─────────────────────────────────────────────────────────
 def render_registration():
-    st.header("Register New Person")
+    _reg_state_init()
+
+    st.markdown("""
+    <div style='background:#E1F5EE;border:0.5px solid #5DCAA5;border-radius:14px;
+                padding:16px 20px;margin-bottom:18px'>
+      <div style='font-size:20px;font-weight:700;color:#085041;margin-bottom:4px'>
+        👤 Register New Person
+      </div>
+      <div style='font-size:13px;color:#0F6E56'>
+        Capture or upload <b>5+ photos</b> from different angles and lighting
+        for best recognition. Each photo is automatically augmented into
+        multiple training samples.
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    total_embs = len(st.session_state.reg_embeddings)
+
+    # ── Progress bar ─────────────────────────────────────────────────────────
+    target = 15   # 15 augmented samples = good recognition
+    pct    = min(total_embs / target, 1.0)
+    bar_color = "#1D9E75" if pct >= 1.0 else "#F5A623" if pct >= 0.4 else "#E74C3C"
+
+    st.markdown(f"""
+    <div style='margin-bottom:6px;font-size:13px;color:#085041;font-weight:600'>
+      Training samples collected: {total_embs}
+      {"Ready to register!" if pct >= 1.0 else f" — capture more photos for best accuracy"}
+    </div>
+    <div style='background:#D8EDE6;border-radius:99px;height:10px;margin-bottom:18px'>
+      <div style='background:{bar_color};width:{pct*100:.0f}%;height:10px;
+                  border-radius:99px;transition:width 0.3s'></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Two capture columns ───────────────────────────────────────────────────
+    col_cam, col_up = st.columns(2, gap="large")
+
+    # ── Webcam capture ────────────────────────────────────────────────────────
+    with col_cam:
+        st.markdown("#### 📷 Webcam capture")
+        st.markdown(
+            "<div style='font-size:12px;color:#6B9E90;margin-bottom:8px'>"
+            "Look straight at the camera, then take the shot. "
+            "Repeat from different angles.</div>",
+            unsafe_allow_html=True
+        )
+
+        cam_shot = st.camera_input(
+            "Take a photo",
+            key=f"cam_{st.session_state.reg_cam_idx}",
+            label_visibility="collapsed",
+        )
+
+        if cam_shot is not None:
+            raw = cam_shot.getvalue()
+            arr = np.frombuffer(raw, np.uint8)
+            img = cv.imdecode(arr, cv.IMREAD_COLOR)
+            cam_key = f"cam_{st.session_state.reg_cam_idx}"
+
+            if cam_key not in st.session_state.reg_processed:
+                st.session_state.reg_processed.add(cam_key)
+
+                if img is not None:
+                    with st.spinner("Extracting face data..."):
+                        added = _process_image(img, f"Webcam #{len(st.session_state.reg_previews)+1}")
+
+                    if added > 0:
+                        st.success(f"✔ Got {added} samples from this shot!")
+                        # Bump index so camera widget resets for next shot
+                        st.session_state.reg_cam_idx += 1
+                        st.rerun()
+                    else:
+                        st.error("No face detected. Move closer and ensure good lighting.")
+                        st.session_state.reg_cam_idx += 1
+                        st.rerun()
+
+    # ── File upload ───────────────────────────────────────────────────────────
+    with col_up:
+        st.markdown("####Upload photos")
+        st.markdown(
+            "<div style='font-size:12px;color:#6B9E90;margin-bottom:8px'>"
+            "Upload JPG/PNG photos — WhatsApp images work well. "
+            "Select multiple at once.</div>",
+            unsafe_allow_html=True
+        )
+
+        uploaded_files = st.file_uploader(
+            "Choose photos",
+            accept_multiple_files=True,
+            type=["jpg", "jpeg", "png"],
+            key="reg_uploader",
+            label_visibility="collapsed",
+        )
+
+        if uploaded_files:
+            new_files = [
+                f for f in uploaded_files
+                if f"file_{f.name}_{f.size}" not in st.session_state.reg_processed
+            ]
+
+            if new_files:
+                with st.spinner(f"Processing {len(new_files)} photo(s)..."):
+                    ok, fail = 0, []
+                    for f in new_files:
+                        fkey = f"file_{f.name}_{f.size}"
+                        st.session_state.reg_processed.add(fkey)
+                        raw  = f.read()
+                        arr  = np.frombuffer(raw, np.uint8)
+                        img  = cv.imdecode(arr, cv.IMREAD_COLOR)
+                        if img is None:
+                            fail.append(f.name)
+                            continue
+                        added = _process_image(img, f.name[:20])
+                        if added > 0:
+                            ok += 1
+                        else:
+                            fail.append(f.name)
+
+                if ok:
+                    st.success(f"✔ {ok} photo(s) processed successfully.")
+                if fail:
+                    st.warning(f"⚠ No face found in: {', '.join(fail)}")
+                st.rerun()
+
+    # ── Sample previews ───────────────────────────────────────────────────────
+    if st.session_state.reg_previews:
+        st.markdown("---")
+        st.markdown(
+            f"**Captured samples ({len(st.session_state.reg_previews)} source photos)**"
+        )
+        thumb_cols = st.columns(min(len(st.session_state.reg_previews), 6))
+        for i, prev in enumerate(st.session_state.reg_previews):
+            with thumb_cols[i % 6]:
+                st.markdown(
+                    f"<div style='text-align:center'>"
+                    f"<img src='{prev['b64']}' style='border-radius:8px;border:2px solid #5DCAA5;"
+                    f"width:72px;height:72px;object-fit:cover'/>"
+                    f"<div style='font-size:10px;color:#6B9E90;margin-top:3px'>"
+                    f"{prev['label']}<br>+{prev['count']} samples</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+        if st.button("🗑️ Clear all samples", key="reg_clear"):
+            for k in ["reg_embeddings", "reg_previews"]:
+                st.session_state[k] = []
+            st.session_state.reg_processed  = set()
+            st.session_state.reg_cam_idx   += 1
+            st.rerun()
+
+    # ── Registration form ─────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### Person details")
+
+    if total_embs == 0:
+        st.info(" Capture or upload at least one photo above before registering.")
+
     with st.form("reg_face"):
-        name = st.text_input("Name")
-        rel = st.selectbox("Relationship", ["Family", "Caregiver", "Friend", "Other"])
-        files = st.file_uploader("Photos", accept_multiple_files=True)
-        if st.form_submit_button("Register"):
-            if name and files:
-                embeddings = []
-                for f in files:
-                    file_bytes = np.frombuffer(f.read(), np.uint8)
-                    img = cv.imdecode(file_bytes, cv.IMREAD_COLOR)
-                    emb = get_embedding(img)
-                    if emb is not None:
-                        embeddings.append(emb)
-                
-                if embeddings:
-                    insert_person(name, rel, json.dumps(embeddings), "")
-                    st.success("Registration Complete!")
-                else:
-                    st.error("No faces detected in images.")
+        col_n, col_r = st.columns(2)
+        with col_n:
+            name = st.text_input("Full name *", placeholder="e.g. Priya Sharma")
+        with col_r:
+            rel = st.selectbox(
+                "Relationship *",
+                ["Daughter", "Son", "Wife", "Husband", "Sister", "Brother",
+                 "Caregiver", "Friend", "Doctor", "Other"]
+            )
+        reminder = st.text_area(
+            "Reminder message (optional)",
+            placeholder="e.g. This is your daughter Priya. She visits every Sunday morning.",
+            height=80,
+        )
+
+        # Disable button if no samples yet
+        can_register = total_embs > 0
+        submitted    = st.form_submit_button(
+            "Register person",
+            disabled=not can_register,
+            use_container_width=True,
+            type="primary",
+        )
+
+    if submitted:
+        if not name.strip():
+            st.error("Please enter the person's name.")
+            return
+
+        embeddings = st.session_state.reg_embeddings
+
+        if not embeddings:
+            st.error("No face samples collected. Please add photos first.")
+            return
+
+        if len(embeddings) < 5:
+            st.warning(
+                f"Only {len(embeddings)} samples — recognition may be less reliable. "
+                "Consider adding more photos later via Manage DB."
+            )
+
+        # ── Save ─────────────────────────────────────────────────────────────
+        insert_person(name.strip(), rel, json.dumps(embeddings), reminder.strip())
+        insert_log(
+            "REGISTRATION",
+            f"Registered: {name.strip()} ({rel}) with {len(embeddings)} augmented samples "
+            f"from {len(st.session_state.reg_previews)} source photo(s)"
+        )
+
+        st.success(
+            f" **{name.strip()}** registered successfully!  \n"
+            f"{len(embeddings)} training samples from "
+            f"{len(st.session_state.reg_previews)} photo(s)."
+        )
+        st.balloons()
+
+        # Reset for next person
+        for k in ["reg_embeddings", "reg_previews"]:
+            st.session_state[k] = []
+        st.session_state.reg_processed  = set()
+        st.session_state.reg_cam_idx   += 1
+
 
 # ── Router ────────────────────────────────────────────────────────────────────
 def main():
@@ -298,6 +638,7 @@ def main():
         render_caregiver()
     else:
         render_registration()
+
 
 if __name__ == "__main__":
     main()

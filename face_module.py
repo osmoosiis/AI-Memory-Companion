@@ -1,9 +1,3 @@
-"""
-face_module.py — FaceNet embedding extraction and matching.
-
-No changes required; preserved verbatim from original.
-"""
-
 from deepface import DeepFace
 import numpy as np
 from config import THRESHOLD_HIGH, THRESHOLD_LOW
@@ -39,11 +33,12 @@ def find_best_match(embedding, known_persons):
     """
     Compare embedding against all stored persons.
 
-    Returns (person_dict, score) for best match, or (None, 0.0) if no match
-    exceeds THRESHOLD_LOW.
+    Returns (person_dict, score, confident) where:
+      - confident=True  → score >= THRESHOLD_HIGH → safe to announce
+      - confident=False → score in [THRESHOLD_LOW, THRESHOLD_HIGH) → show "Maybe" in UI only
+      - (None, 0.0, False) → no match found
 
-    Scores in [THRESHOLD_LOW, THRESHOLD_HIGH) return a 'Maybe <name>' person
-    to show uncertainty in the UI without triggering a full announcement.
+    The 'name' field is NEVER prefixed with 'Maybe' — callers decide display logic.
     """
     best_score  = -1.0
     best_person = None
@@ -54,18 +49,22 @@ def find_best_match(embedding, known_persons):
             continue
 
         similarities = [cosine_similarity(embedding, emb) for emb in embeddings]
-        avg_score    = sum(similarities) / len(similarities)
 
-        if avg_score > best_score:
-            best_score  = avg_score
+        # Top-3 average instead of all-embedding average.
+        # With augmented datasets, a straight average is dragged down by
+        # weaker augmented variants (flips, brightness shifts), causing false Unknowns.
+        top_k      = min(3, len(similarities))
+        top_scores = sorted(similarities, reverse=True)[:top_k]
+        score      = sum(top_scores) / top_k
+
+        if score > best_score:
+            best_score  = score
             best_person = person
 
     if best_score >= THRESHOLD_HIGH:
-        return best_person, best_score
+        return best_person, best_score, True   # confident match
 
     if best_score >= THRESHOLD_LOW:
-        maybe = best_person.copy()
-        maybe["name"] = f"Maybe {best_person['name']}"
-        return maybe, best_score
+        return best_person, best_score, False  # uncertain — show in UI, don't announce
 
-    return None, 0.0
+    return None, 0.0, False  # no match

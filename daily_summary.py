@@ -1,10 +1,3 @@
-"""
-daily_summary.py — Warm natural-language recap of the day.
-
-Fix vs original:
-  - get_today_summary() now exists in database.py (was missing, causing ImportError).
-  - Uses enqueue() instead of a missing 'enqueue' import path.
-"""
 
 from datetime import datetime
 from database import get_today_summary
@@ -18,8 +11,10 @@ def generate_summary_text() -> str:
 
     recognitions = [l for l in logs if l[2] == "RECOGNITION"]
     reminders    = [l for l in logs if l[2] == "REMINDER"]
-    commands     = [l for l in logs if l[2] in ("VOICE_COMMAND", "TIME_QUERY", "DATE_QUERY",
-                                                  "REMINDER_QUERY", "ORIENTATION_QUERY")]
+    commands     = [l for l in logs if l[2] in (
+        "VOICE_COMMAND", "TIME_QUERY", "DATE_QUERY",
+        "REMINDER_QUERY", "ORIENTATION_QUERY"
+    )]
     alerts       = [l for l in logs if l[2] in ("UNKNOWN_ALERT", "CRITICAL_ALERT")]
 
     parts = []
@@ -27,19 +22,25 @@ def generate_summary_text() -> str:
     # ── People seen ───────────────────────────────────────────────────────────
     if recognitions:
         seen_with_times: dict = {}
+
         for l in recognitions:
-            raw  = l[3].replace("Recognised: ", "")
-            name = raw.split(" (")[0]
+            # Description format: "Recognized: Name (score)"
+            desc = l[3] or ""
+            # Strip leading "Recognized: " and trailing " (score)"
+            raw  = desc.replace("Recognized: ", "").split(" (")[0].strip()
+            name = raw if raw else "Someone"
+
             try:
                 hour = int(l[1][11:13])
             except (IndexError, ValueError):
                 hour = 12
+
             seen_with_times.setdefault(name, []).append(hour)
 
         people_parts = []
         for name, hours in seen_with_times.items():
-            count = len(hours)
-            avg_h = sum(hours) // len(hours)
+            count  = len(hours)
+            avg_h  = sum(hours) // len(hours)
             period = (
                 "this morning"   if avg_h < 12 else
                 "this afternoon" if avg_h < 17 else
@@ -60,8 +61,8 @@ def generate_summary_text() -> str:
 
     # ── Reminders ─────────────────────────────────────────────────────────────
     if reminders:
-        med_rems  = [l for l in reminders if "Medication" in l[3]]
-        meal_rems = [l for l in reminders if "Meal"       in l[3]]
+        med_rems  = [l for l in reminders if "Medication" in (l[3] or "")]
+        meal_rems = [l for l in reminders if "Meal"       in (l[3] or "")]
         other     = len(reminders) - len(med_rems) - len(meal_rems)
 
         if med_rems:
@@ -74,10 +75,12 @@ def generate_summary_text() -> str:
             parts.append(
                 f"You had {len(meal_rems)} meal reminder{'s' if len(meal_rems) > 1 else ''} today."
             )
+
         if other > 0:
             parts.append(
                 f"You completed {other} other reminder{'s' if other > 1 else ''} today."
             )
+
     else:
         parts.append("You have not completed any reminders today.")
 
@@ -87,7 +90,7 @@ def generate_summary_text() -> str:
             f"You asked me {len(commands)} question{'s' if len(commands) > 1 else ''} today."
         )
 
-    # ── Security ─────────────────────────────────────────────────────────────
+    # ── Alerts ────────────────────────────────────────────────────────────────
     if alerts:
         parts.append(
             f"Note: {len(alerts)} unknown visitor "
@@ -107,5 +110,5 @@ def generate_summary_text() -> str:
 def speak_summary():
     text = generate_summary_text()
     print(f"[SUMMARY] {text}")
-    enqueue(text)
+    enqueue(text, force=True)
     return text

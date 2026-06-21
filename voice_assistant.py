@@ -1,7 +1,4 @@
-"""
-voice_assistant.py
-Whisper-based voice assistant for CogniCare.
-"""
+
 
 import os
 import threading
@@ -23,10 +20,10 @@ from context_engine import (
 
 from database import insert_log
 
+from reminder_engine import check_voice_acknowledgement
 
-# =========================================================
-# LOAD WHISPER MODEL
-# =========================================================
+
+
 
 print("[WHISPER] Loading model...")
 
@@ -35,70 +32,56 @@ model = whisper.load_model("base")
 print("[WHISPER] Model loaded")
 
 
-# =========================================================
-# GLOBALS
-# =========================================================
+
 
 running = True
 _thread = None
 
+SAMPLE_RATE     = 16000
+RECORD_SECONDS  = 2       # reduced from 3 → faster command cycle
+SILENCE_THRESH  = 0.008   # RMS below this = silence, skip transcription
 
-# =========================================================
-# RECORD AUDIO
-# =========================================================
 
-def record_audio(
-    duration: float = 3,
-    samplerate: int = 16000
-) -> np.ndarray:
 
-    print("[VOICE] Listening...")
+
+def record_audio() -> np.ndarray:
 
     audio = sd.rec(
-        int(duration * samplerate),
-        samplerate=samplerate,
+        int(RECORD_SECONDS * SAMPLE_RATE),
+        samplerate=SAMPLE_RATE,
         channels=1,
         dtype="float32"
     )
 
     sd.wait()
 
-    audio = np.squeeze(audio)
-
-    return audio
+    return np.squeeze(audio)
 
 
-# =========================================================
-# TRANSCRIBE
-# =========================================================
 
-def transcribe(audio: np.ndarray, samplerate: int = 16000) -> str:
 
-    # Skip silence
-    volume = np.abs(audio).mean()
+def transcribe(audio: np.ndarray) -> str:
 
-    if volume < 0.01:
+    # Fast energy check — skip silent frames without hitting Whisper
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+
+    if rms < SILENCE_THRESH:
         return ""
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".wav",
-        delete=False
-    ) as f:
-
-        path = f.name
+    path = None
 
     try:
 
-        wav.write(path, samplerate, audio)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            path = f.name
 
-        result = model.transcribe(
-            path,
-            language="en",
-            fp16=False
-        )
+        wav.write(path, SAMPLE_RATE, audio)
+
+        result = model.transcribe(path, language="en", fp16=False)
 
         text = result["text"].strip()
 
+        # Filter Whisper hallucinations
         junk_phrases = [
             "thank you",
             "thanks for watching",
@@ -113,15 +96,20 @@ def transcribe(audio: np.ndarray, samplerate: int = 16000) -> str:
 
         return text
 
+    except Exception as e:
+
+        print(f"[WHISPER TRANSCRIBE ERROR] {e}")
+        return ""
+
     finally:
 
-        if os.path.exists(path):
-            os.remove(path)
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
 
 
-# =========================================================
-# RESPONSE HELPER
-# =========================================================
 
 def _respond(
     message: str,
@@ -132,17 +120,12 @@ def _respond(
 
     print(f"[ASSISTANT] {message}")
 
-    audio_manager.enqueue(
-        message,
-        priority=priority
-    )
+    audio_manager.enqueue(message, priority=priority)
 
     insert_log(log_type, log_desc)
 
 
-# =========================================================
-# COMMAND HANDLER
-# =========================================================
+
 
 def handle_command(text: str):
 
@@ -150,154 +133,69 @@ def handle_command(text: str):
 
     print(f"[VOICE] Heard: {t}")
 
-    # ==========================================
-    # TIME
-    # ==========================================
+    # ── Time ──────────────────────────────────────────────────────────────────
 
     if any(k in t for k in ["time", "clock", "hour"]):
 
         response = generate_time_response()
-
-        _respond(
-            response,
-            "TIME_QUERY",
-            f"User asked time -> {response}"
-        )
-
+        _respond(response, "TIME_QUERY", f"User asked time -> {response}")
         return
 
-    # ==========================================
-    # DATE
-    # ==========================================
+    # ── Date ──────────────────────────────────────────────────────────────────
 
     if any(k in t for k in ["day", "date", "today"]):
 
         now = datetime.now()
-
         response = (
             f"Today is {now.strftime('%A')}, "
             f"{now.strftime('%B %d, %Y')}."
         )
-
-        _respond(
-            response,
-            "DATE_QUERY",
-            response
-        )
-
+        _respond(response, "DATE_QUERY", response)
         return
 
-    # ==========================================
-    # REMINDERS
-    # ==========================================
+    # ── Reminders ─────────────────────────────────────────────────────────────
 
     if any(k in t for k in ["reminder", "schedule", "task"]):
 
         response = generate_daily_reminder_summary()
-
-        _respond(
-            response,
-            "REMINDER_QUERY",
-            "User checked reminders"
-        )
-
+        _respond(response, "REMINDER_QUERY", "User checked reminders")
         return
 
-    # ==========================================
-    # SAFETY
-    # ==========================================
+    # ── Location / Safety ─────────────────────────────────────────────────────
 
-    if any(k in t for k in [
-        "where am i",
-        "am i safe",
-        "where is this"
-    ]):
+    if any(k in t for k in ["where am i", "am i safe", "where is this"]):
 
-        response = (
-            "You are at home. "
-            "You are safe."
-        )
-
-        _respond(
-            response,
-            "ORIENTATION_QUERY",
-            response
-        )
-
+        response = "You are at home. You are safe."
+        _respond(response, "ORIENTATION_QUERY", response)
         return
 
-    # ==========================================
-    # IDENTITY
-    # ==========================================
+    # ── Identity ──────────────────────────────────────────────────────────────
 
-    if any(k in t for k in [
-        "who are you",
-        "your name"
-    ]):
+    if any(k in t for k in ["who are you", "your name"]):
 
-        response = (
-            "I am CogniCare, "
-            "your memory companion."
-        )
-
-        _respond(
-            response,
-            "IDENTITY_QUERY",
-            response
-        )
-
+        response = "I am CogniCare, your memory companion."
+        _respond(response, "IDENTITY_QUERY", response)
         return
 
-    # ==========================================
-    # HELP
-    # ==========================================
+    # ── Help / Emergency ──────────────────────────────────────────────────────
 
-    if any(k in t for k in [
-        "help",
-        "emergency",
-        "call"
-    ]):
+    if any(k in t for k in ["help", "emergency", "call"]):
 
-        response = (
-            "I am alerting your caregiver now."
-        )
-
-        _respond(
-            response,
-            "HELP_REQUEST",
-            response,
-            priority=True
-        )
-
+        response = "I am alerting your caregiver now."
+        _respond(response, "HELP_REQUEST", response, priority=True)
         return
 
-    # ==========================================
-    # REMINDER ACK
-    # ==========================================
-
-    from reminder_engine import check_voice_acknowledgement
+    # ── Reminder acknowledgement ──────────────────────────────────────────────
 
     if check_voice_acknowledgement(t):
 
-        response = (
-            "Okay. "
-            "I marked that reminder complete."
-        )
-
-        _respond(
-            response,
-            "REMINDER_ACK",
-            response
-        )
-
+        response = "Okay. I marked that reminder complete."
+        _respond(response, "REMINDER_ACK", response)
         return
 
-    print(f"[VOICE] No command match: {t}")
+    print(f"[VOICE] No command matched: {t}")
 
 
-# =========================================================
-# LISTEN LOOP
-# =========================================================
 
 def listen_loop():
 
@@ -311,39 +209,33 @@ def listen_loop():
 
             # Don't listen while speaking
             if audio_manager.speaking():
-
                 time.sleep(0.2)
-
                 continue
 
             audio = record_audio()
 
-            # Recheck after recording
+            # Recheck after recording (speech may have started during recording)
             if audio_manager.speaking():
-
                 continue
 
             text = transcribe(audio)
 
             if text and len(text.strip()) > 2:
-
                 handle_command(text)
+
+            else:
+                # Small sleep to avoid hammering CPU when idle
+                time.sleep(0.05)
 
         except Exception as e:
 
             print(f"[WHISPER ERROR] {e}")
-
             time.sleep(1)
 
 
-# =========================================================
-# START
-# =========================================================
-
 def start():
 
-    global _thread
-    global running
+    global _thread, running
 
     if _thread and _thread.is_alive():
         return
@@ -359,12 +251,8 @@ def start():
     _thread.start()
 
 
-# =========================================================
-# STOP
-# =========================================================
 
 def stop():
 
     global running
-
     running = False

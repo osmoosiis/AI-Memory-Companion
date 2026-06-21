@@ -1,8 +1,3 @@
-"""
-reminder_engine.py — Scheduled reminder checker.
-FINAL STABLE VERSION
-"""
-
 import threading
 import time
 from datetime import datetime
@@ -18,24 +13,20 @@ from database import (
 )
 
 
-# =========================================================
-# GLOBALS
-# =========================================================
+#global var
 
 _stop_event = threading.Event()
 
-_spoken_this_minute = set()
+_spoken_this_minute: set = set()
 
-_pending_ack = {}
+_pending_ack: dict = {}   # {reminder_id: timestamp_when_spoken}
 
 _thread = None
 
-ACKNOWLEDGE_WINDOW = 30
+ACKNOWLEDGE_WINDOW = 120  # seconds the user has to voice-acknowledge
 
 
-# =========================================================
 # CHECK REMINDERS
-# =========================================================
 
 def _check_reminders():
 
@@ -47,33 +38,25 @@ def _check_reminders():
 
         key = (rid, now)
 
-        # Prevent repeated speaking in same minute
+        # Prevent repeated speaking within the same minute
         if key in _spoken_this_minute:
             continue
 
-        msg = generate_reminder_message(
-            text,
-            category,
-            person=None
-        )
+        msg = generate_reminder_message(text, category, person=None)
 
         print(f"[REMINDER ENGINE] Triggering: {category} — {text}")
 
-        enqueue(msg)
+        # force=True ensures this is never silently dropped by cooldown
+        enqueue(msg, force=True)
 
-        insert_log(
-            "REMINDER",
-            f"Audio triggered: {category}: {text}"
-        )
+        insert_log("REMINDER", f"Audio triggered: {category}: {text}")
 
         _pending_ack[rid] = time.time()
 
         _spoken_this_minute.add(key)
 
 
-# =========================================================
 # THREAD LOOP
-# =========================================================
 
 def _runner():
 
@@ -85,26 +68,21 @@ def _runner():
 
             _check_reminders()
 
-            # Clear stale minute entries
+            # Clear stale minute-keyed entries
             current_min = datetime.now().strftime("%H:%M")
 
-            stale = {
-                k for k in _spoken_this_minute
-                if k[1] != current_min
-            }
+            stale = {k for k in _spoken_this_minute if k[1] != current_min}
 
             _spoken_this_minute.difference_update(stale)
 
-            # Remove expired acknowledgements
-            now_ts = time.time()
-
+            # Expire unacknowledged reminders
+            now_ts  = time.time()
             expired = [
                 rid for rid, ts in _pending_ack.items()
                 if now_ts - ts > ACKNOWLEDGE_WINDOW
             ]
 
             for rid in expired:
-
                 _pending_ack.pop(rid, None)
 
         except Exception as e:
@@ -114,48 +92,38 @@ def _runner():
         time.sleep(5)
 
 
-# =========================================================
-# VOICE ACKNOWLEDGEMENT
-# =========================================================
+#voice acknowledgement
 
 def check_voice_acknowledgement(text: str) -> bool:
+    """
+    If the user says an acknowledgement keyword, mark the OLDEST
+    pending reminder as complete (one at a time — not all at once).
+    Returns True if a reminder was acknowledged.
+    """
 
-    keywords = [
-        "done",
-        "okay",
-        "ok",
-        "taken",
-        "finished",
-        "yes",
-        "got it"
-    ]
+    keywords = ["done", "okay", "ok", "taken", "finished", "yes", "got it", "complete"]
 
-    t = text.lower()
-
-    if not any(k in t for k in keywords):
+    if not any(k in text.lower() for k in keywords):
         return False
 
-    acked = False
+    if not _pending_ack:
+        return False
 
-    for rid in list(_pending_ack.keys()):
+    # Mark only the oldest unacknowledged reminder
+    oldest_rid = min(_pending_ack, key=_pending_ack.get)
 
-        mark_reminder_complete(rid)
+    mark_reminder_complete(oldest_rid)
 
-        insert_log(
-            "VOICE",
-            f"Reminder {rid} acknowledged via voice"
-        )
+    insert_log("VOICE", f"Reminder {oldest_rid} acknowledged via voice")
 
-        _pending_ack.pop(rid, None)
+    _pending_ack.pop(oldest_rid, None)
 
-        acked = True
-
-    return acked
+    return True
 
 
-# =========================================================
+
 # START
-# =========================================================
+
 
 def start():
 
@@ -175,9 +143,6 @@ def start():
     _thread.start()
 
 
-# =========================================================
-# STOP
-# =========================================================
 
 def stop():
 

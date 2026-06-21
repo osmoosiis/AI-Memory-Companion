@@ -1,9 +1,3 @@
-"""
-camera_utils.py — Camera open/capture helpers.
-
-No logic changes; relies on config.py which now defaults CAMERA_INDEX = 0.
-"""
-
 import cv2
 from config import IP_WEBCAM_URL, CAMERA_INDEX
 
